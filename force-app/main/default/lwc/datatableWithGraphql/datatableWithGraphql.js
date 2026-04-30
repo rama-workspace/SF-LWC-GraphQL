@@ -2,6 +2,7 @@
 import { LightningElement, wire } from "lwc";
 import { gql, graphql } from "lightning/graphql";
 
+// Define columns for the datatable
 const columns = [
   { label: "Name", fieldName: "Name" },
   { label: "Phone", fieldName: "Phone", type: "phone" },
