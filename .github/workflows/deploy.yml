@@ -35,23 +35,23 @@ jobs:
         run: |
           echo "CURRENT_SHA=${{ github.sha }}" >> $GITHUB_ENV
           echo "PREVIOUS_SHA=${{ github.event.before }}" >> $GITHUB_ENV
-          # github.sha       = the latest commit SHA (HEAD) triggered by this push
+          # github.sha          = the latest commit SHA (HEAD) triggered by this push
           # github.event.before = the commit SHA just before this push (baseline for comparison)
 
       - name: Generate Delta Metadata Package
         run: |
           mkdir -p delta  # Create output folder to store delta metadata
-          sgd \
+          sf sgd source delta \
             --to "$CURRENT_SHA" \
             --from "$PREVIOUS_SHA" \
             --repo . \
-            --output delta \
+            --output-dir delta \
             --source-dir force-app  # Only scan force-app folder for Salesforce metadata changes
-          # sgd = sfdx-git-delta command
-          # --to   : end commit (latest)
-          # --from : start commit (previous)
-          # --repo : current repo directory
-          # --output : folder to write the delta package.xml and metadata
+          # sf sgd source delta = correct command when sfdx-git-delta is installed as SF CLI plugin
+          # --to         : end commit (latest)
+          # --from       : start commit (previous)
+          # --repo       : current repo directory
+          # --output-dir : folder to write the delta package.xml and metadata
           # --source-dir : your Salesforce source folder
 
       - name: Display Delta Package (for Debugging)
@@ -83,5 +83,5 @@ jobs:
               --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
               --wait 30
           else
-            echo "Rama - No destructive changes detected. Skipping."
+            echo "No destructive changes detected. Skipping."
           fi
