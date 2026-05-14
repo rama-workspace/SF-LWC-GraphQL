@@ -91,14 +91,3 @@ jobs:
             echo "No changes to deploy."
           fi
 
-      - name: Deploy Destructive Changes
-        run: |
-          if [ -s delta/destructiveChanges/destructiveChanges.xml ]; then
-            sf project deploy start \
-              --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
-              --manifest delta/destructiveChanges/destructiveChanges.xml \
-              --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
-              --wait 30
-          else
-            echo "No destructive changes to deploy."
-          fi
