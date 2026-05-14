@@ -11,9 +11,9 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4        # ✅ Upgraded from v3 → v4 (Node.js 24 compatible)
         with:
-          fetch-depth: 0  # Fetch full Git history to compare commits for delta changes
+          fetch-depth: 0                 # Fetch full Git history to compare commits for delta changes
 
       - name: Install Salesforce CLI with NPM
         run: |
@@ -31,10 +31,18 @@ jobs:
             --sfdx-url-stdin
 
       - name: Get Previous and Current Commit SHAs
-        id: commits
         run: |
-          echo "CURRENT_SHA=${{ github.sha }}" >> $GITHUB_ENV
-          echo "PREVIOUS_SHA=${{ github.event.before }}" >> $GITHUB_ENV
+          CURRENT_SHA="${{ github.sha }}"
+          PREVIOUS_SHA="${{ github.event.before }}"
+
+          # Fallback: if first push ever, compare against root commit
+          if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            PREVIOUS_SHA=$(git rev-list --max-parents=0 HEAD)
+            echo "First push detected — using root commit as baseline: $PREVIOUS_SHA"
+          fi
+
+          echo "CURRENT_SHA=$CURRENT_SHA"   >> $GITHUB_ENV
+          echo "PREVIOUS_SHA=$PREVIOUS_SHA" >> $GITHUB_ENV
           # github.sha          = the latest commit SHA (HEAD) triggered by this push
           # github.event.before = the commit SHA just before this push (baseline for comparison)
 
@@ -57,7 +65,7 @@ jobs:
       - name: Display Delta Package (for Debugging)
         run: |
           echo "=== package.xml ===" 
-          cat delta/package/package.xml  # Shows exactly which components will be deployed
+          cat delta/package/package.xml       # Shows exactly which components will be deployed
           echo ""
           echo "=== destructiveChanges.xml (if any) ==="
           cat delta/destructiveChanges/destructiveChanges.xml 2>/dev/null || echo "No destructive changes"
