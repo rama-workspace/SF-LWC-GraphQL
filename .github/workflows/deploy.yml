@@ -5,22 +5,74 @@ on:
     branches:
       - main
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppresses Node.js 20 deprecation warning
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4             # v4 = Node.js 24 compatible
+        with:
+          fetch-depth: 0                      # REQUIRED: SGD needs full git history to detect changes
 
-      - name: Install Salesforce CLI with NPM
-        run: |
-            npm install @salesforce/cli --global      
+      - name: Install Salesforce CLI
+        run: npm install @salesforce/cli --global
+
+      - name: Install sfdx-git-delta
+        run: echo 'y' | sf plugins install sfdx-git-delta   # Adds "sf sgd" command for delta generation
 
       - name: Authenticate to Salesforce
         run: |
-            echo "${{ secrets.SFDX_AUTH_URL }}" | sf org login sfdx-url --alias orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com --set-default --sfdx-url-stdin
+          echo "${{ secrets.SFDX_AUTH_URL }}" | sf org login sfdx-url \
+            --alias orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
+            --set-default \
+            --sfdx-url-stdin
 
-      - name: Deploy to Salesforce
+      - name: Resolve Commit SHAs
         run: |
-            sf project deploy start --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com --wait 30
+          CURRENT_SHA="${{ github.sha }}"
+          PREVIOUS_SHA="${{ github.event.before }}"
+
+          # First push to branch has no previous commit — fallback to root commit
+          if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            PREVIOUS_SHA=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          echo "CURRENT_SHA=$CURRENT_SHA"   >> $GITHUB_ENV
+          echo "PREVIOUS_SHA=$PREVIOUS_SHA" >> $GITHUB_ENV
+
+      - name: Generate Delta Package
+        run: |
+          mkdir -p delta
+          sf sgd source delta \
+            --to   "$CURRENT_SHA" \
+            --from "$PREVIOUS_SHA" \
+            --repo . \
+            --output-dir delta \
+            --source-dir force-app
+
+      - name: Deploy Delta Changes
+        run: |
+          if [ -s delta/package/package.xml ]; then
+            sf project deploy start \
+              --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
+              --manifest delta/package/package.xml \
+              --wait 30
+          else
+            echo "No changes to deploy."
+          fi
+
+      - name: Deploy Destructive Changes
+        run: |
+          if [ -s delta/destructiveChanges/destructiveChanges.xml ]; then
+            sf project deploy start \
+              --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
+              --manifest delta/destructiveChanges/destructiveChanges.xml \
+              --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
+              --wait 30
+          else
+            echo "No destructive changes to deploy."
+          fi
