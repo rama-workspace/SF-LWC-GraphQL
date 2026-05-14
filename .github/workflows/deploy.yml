@@ -5,91 +5,161 @@ on:
     branches:
       - main
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # ✅ Forces Node.js 24 for all actions (fixes deprecation warning)
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4        # ✅ Upgraded from v3 → v4 (Node.js 24 compatible)
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0                 # Fetch full Git history to compare commits for delta changes
+          fetch-depth: 0  # Fetch full Git history required for delta comparison
 
-      - name: Install Salesforce CLI with NPM
+      # ─────────────────────────────────────────────
+      # INSTALL TOOLS
+      # ─────────────────────────────────────────────
+      - name: Install Salesforce CLI
         run: |
+          echo "📦 Installing Salesforce CLI..."
           npm install @salesforce/cli --global
+          echo "✅ SF CLI version: $(sf --version)"
 
       - name: Install sfdx-git-delta Plugin
         run: |
-          echo 'y' | sf plugins install sfdx-git-delta  # Plugin that generates delta metadata between commits
+          echo "📦 Installing sfdx-git-delta plugin..."
+          echo 'y' | sf plugins install sfdx-git-delta
+          echo "✅ SGD version: $(sf sgd --version 2>/dev/null || echo 'installed')"
 
+      # ─────────────────────────────────────────────
+      # AUTHENTICATE
+      # ─────────────────────────────────────────────
       - name: Authenticate to Salesforce
         run: |
+          echo "🔐 Authenticating to Salesforce org..."
+
+          # Verify secret is not empty before attempting auth
+          if [ -z "${{ secrets.SFDX_AUTH_URL }}" ]; then
+            echo "❌ ERROR: SFDX_AUTH_URL secret is empty or not set!"
+            exit 1
+          fi
+
           echo "${{ secrets.SFDX_AUTH_URL }}" | sf org login sfdx-url \
             --alias orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
             --set-default \
             --sfdx-url-stdin
 
+          echo "✅ Authentication successful!"
+          sf org display --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com
+
+      # ─────────────────────────────────────────────
+      # RESOLVE COMMIT SHAs
+      # ─────────────────────────────────────────────
       - name: Get Previous and Current Commit SHAs
         run: |
           CURRENT_SHA="${{ github.sha }}"
           PREVIOUS_SHA="${{ github.event.before }}"
 
-          # Fallback: if first push ever, compare against root commit
+          echo "🔍 Raw SHAs from GitHub event:"
+          echo "   CURRENT_SHA  = $CURRENT_SHA"
+          echo "   PREVIOUS_SHA = $PREVIOUS_SHA"
+
+          # Fallback: if first push to branch, PREVIOUS_SHA is all zeros
           if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
             PREVIOUS_SHA=$(git rev-list --max-parents=0 HEAD)
-            echo "First push detected — using root commit as baseline: $PREVIOUS_SHA"
+            echo "⚠️  First push detected — using root commit as baseline: $PREVIOUS_SHA"
           fi
 
           echo "CURRENT_SHA=$CURRENT_SHA"   >> $GITHUB_ENV
           echo "PREVIOUS_SHA=$PREVIOUS_SHA" >> $GITHUB_ENV
-          # github.sha          = the latest commit SHA (HEAD) triggered by this push
-          # github.event.before = the commit SHA just before this push (baseline for comparison)
 
+          echo "✅ Final SHAs:"
+          echo "   FROM : $PREVIOUS_SHA"
+          echo "   TO   : $CURRENT_SHA"
+
+          # Show what files changed between the two commits
+          echo ""
+          echo "📋 Files changed in this push:"
+          git diff --name-only "$PREVIOUS_SHA" "$CURRENT_SHA" || echo "⚠️ Could not list changed files"
+
+      # ─────────────────────────────────────────────
+      # GENERATE DELTA PACKAGE
+      # ─────────────────────────────────────────────
       - name: Generate Delta Metadata Package
         run: |
-          mkdir -p delta  # Create output folder to store delta metadata
+          echo "⚙️  Generating delta metadata package..."
+          echo "   FROM : $PREVIOUS_SHA"
+          echo "   TO   : $CURRENT_SHA"
+
+          mkdir -p delta
+
           sf sgd source delta \
             --to "$CURRENT_SHA" \
             --from "$PREVIOUS_SHA" \
             --repo . \
             --output-dir delta \
-            --source-dir force-app  # Only scan force-app folder for Salesforce metadata changes
-          # sf sgd source delta = correct command when sfdx-git-delta is installed as SF CLI plugin
-          # --to         : end commit (latest)
-          # --from       : start commit (previous)
-          # --repo       : current repo directory
-          # --output-dir : folder to write the delta package.xml and metadata
-          # --source-dir : your Salesforce source folder
+            --source-dir force-app
 
-      - name: Display Delta Package (for Debugging)
-        run: |
-          echo "=== package.xml ===" 
-          cat delta/package/package.xml       # Shows exactly which components will be deployed
+          echo "✅ Delta generation complete!"
           echo ""
-          echo "=== destructiveChanges.xml (if any) ==="
-          cat delta/destructiveChanges/destructiveChanges.xml 2>/dev/null || echo "No destructive changes"
-          # destructiveChanges.xml lists components deleted in Git that should be removed from the org
+          echo "📁 Delta folder contents:"
+          find delta -type f | sort  # List all generated files for visibility
 
+      # ─────────────────────────────────────────────
+      # DISPLAY DELTA CONTENTS (DEBUGGING)
+      # ─────────────────────────────────────────────
+      - name: Display Delta Package
+        run: |
+          echo "========================================"
+          echo "=== package.xml ==="
+          echo "========================================"
+          if [ -f delta/package/package.xml ]; then
+            cat delta/package/package.xml
+          else
+            echo "⚠️  delta/package/package.xml not found!"
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "=== destructiveChanges.xml (if any) ==="
+          echo "========================================"
+          if [ -f delta/destructiveChanges/destructiveChanges.xml ]; then
+            cat delta/destructiveChanges/destructiveChanges.xml
+          else
+            echo "ℹ️  No destructive changes found."
+          fi
+
+      # ─────────────────────────────────────────────
+      # DEPLOY DELTA CHANGES
+      # ─────────────────────────────────────────────
       - name: Deploy Delta Changes to Salesforce
         run: |
-          if [ -s delta/package/package.xml ]; then  # Only deploy if package.xml is non-empty
+          if [ -s delta/package/package.xml ]; then
+            echo "🚀 Deploying delta metadata to Salesforce..."
             sf project deploy start \
               --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
               --manifest delta/package/package.xml \
               --wait 30
+            echo "✅ Deployment complete!"
           else
-            echo "No metadata changes detected. Skipping deployment."
+            echo "ℹ️  No metadata changes detected. Skipping deployment."
           fi
 
-      - name: Deploy Destructive Changes (Deleted Components)
+      # ─────────────────────────────────────────────
+      # DEPLOY DESTRUCTIVE CHANGES (DELETIONS)
+      # ─────────────────────────────────────────────
+      - name: Deploy Destructive Changes
         run: |
-          if [ -s delta/destructiveChanges/destructiveChanges.xml ]; then  # Only run if deletions exist
+          if [ -s delta/destructiveChanges/destructiveChanges.xml ]; then
+            echo "🗑️  Deploying destructive changes (deletions) to Salesforce..."
             sf project deploy start \
               --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
               --manifest delta/destructiveChanges/destructiveChanges.xml \
               --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
               --wait 30
+            echo "✅ Destructive changes deployed!"
           else
-            echo "No destructive changes detected. Skipping."
+            echo "ℹ️  No destructive changes detected. Skipping."
           fi
