@@ -18,6 +18,32 @@ jobs:
         with:
           fetch-depth: 0                      # REQUIRED: SGD needs full git history to detect changes
 
+      - name: Debug - Print All Info
+        run: |
+          echo "===== 1. NODE ====="
+          node --version
+          npm --version
+
+          echo "===== 2. REPO STRUCTURE ====="
+          ls -la
+          ls force-app/ 2>/dev/null && echo "force-app EXISTS" || echo "❌ force-app MISSING"
+
+          echo "===== 3. GIT HISTORY ====="
+          git log --oneline -5
+
+          echo "===== 4. COMMIT SHAs ====="
+          echo "github.sha          = ${{ github.sha }}"
+          echo "github.event.before = ${{ github.event.before }}"
+
+          echo "===== 5. SECRET CHECK ====="
+          SECRET="${{ secrets.SFDX_AUTH_URL }}"
+          if [ -z "$SECRET" ]; then
+            echo "❌ SFDX_AUTH_URL is EMPTY - secret not set!"
+          else
+            echo "✅ SFDX_AUTH_URL is set"
+            echo "   Starts with: ${SECRET:0:10}..."
+          fi    
+      
       - name: Install Salesforce CLI
         run: npm install @salesforce/cli --global
 
