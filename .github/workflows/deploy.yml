@@ -83,5 +83,5 @@ jobs:
               --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
               --wait 30
           else
-            echo "No destructive changes detected. Skipping."
+            echo "Rama - No destructive changes detected. Skipping."
           fi
