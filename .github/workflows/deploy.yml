@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Suppresses Node.js 20 deprecation warning
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   deploy:
@@ -14,41 +14,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4             # v4 = Node.js 24 compatible
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0                      # REQUIRED: SGD needs full git history to detect changes
+          fetch-depth: 0
 
-      - name: Debug - Print All Info
-        run: |
-          echo "===== 1. NODE ====="
-          node --version
-          npm --version
-
-          echo "===== 2. REPO STRUCTURE ====="
-          ls -la
-          ls force-app/ 2>/dev/null && echo "force-app EXISTS" || echo "❌ force-app MISSING"
-
-          echo "===== 3. GIT HISTORY ====="
-          git log --oneline -5
-
-          echo "===== 4. COMMIT SHAs ====="
-          echo "github.sha          = ${{ github.sha }}"
-          echo "github.event.before = ${{ github.event.before }}"
-
-          echo "===== 5. SECRET CHECK ====="
-          SECRET="${{ secrets.SFDX_AUTH_URL }}"
-          if [ -z "$SECRET" ]; then
-            echo "❌ SFDX_AUTH_URL is EMPTY - secret not set!"
-          else
-            echo "✅ SFDX_AUTH_URL is set"
-            echo "   Starts with: ${SECRET:0:10}..."
-          fi    
-      
       - name: Install Salesforce CLI
         run: npm install @salesforce/cli --global
 
       - name: Install sfdx-git-delta
-        run: echo 'y' | sf plugins install sfdx-git-delta   # Adds "sf sgd" command for delta generation
+        run: echo 'y' | sf plugins install sfdx-git-delta
 
       - name: Authenticate to Salesforce
         run: |
@@ -65,7 +39,11 @@ jobs:
           # First push to branch has no previous commit — fallback to root commit
           if [[ "$PREVIOUS_SHA" == "0000000000000000000000000000000000000000" ]]; then
             PREVIOUS_SHA=$(git rev-list --max-parents=0 HEAD)
+            echo "⚠️ First push — using root commit: $PREVIOUS_SHA"
           fi
+
+          echo "FROM : $PREVIOUS_SHA"
+          echo "TO   : $CURRENT_SHA"
 
           echo "CURRENT_SHA=$CURRENT_SHA"   >> $GITHUB_ENV
           echo "PREVIOUS_SHA=$PREVIOUS_SHA" >> $GITHUB_ENV
@@ -80,14 +58,54 @@ jobs:
             --output-dir delta \
             --source-dir force-app
 
+          echo "📋 Generated package.xml:"
+          cat delta/package/package.xml 2>/dev/null || echo "No package.xml generated"
+
+          echo ""
+          echo "📋 Generated destructiveChanges.xml:"
+          cat delta/destructiveChanges/destructiveChanges.xml 2>/dev/null || echo "No destructive changes"
+
       - name: Deploy Delta Changes
         run: |
-          if [ -s delta/package/package.xml ]; then
+          if [ ! -f delta/package/package.xml ]; then
+            echo "ℹ️ No package.xml found. Skipping."
+            exit 0
+          fi
+
+          # Count <members> tags — real components to deploy
+          COMPONENT_COUNT=$(grep -c "<members>" delta/package/package.xml 2>/dev/null || echo "0")
+          echo "📦 Components found in package.xml: $COMPONENT_COUNT"
+
+          if [ "$COMPONENT_COUNT" -gt 0 ]; then
+            echo "🚀 Deploying changes..."
             sf project deploy start \
               --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
               --manifest delta/package/package.xml \
               --wait 30
+            echo "✅ Deployment successful!"
           else
-            echo "No changes to deploy."
+            echo "ℹ️ package.xml is empty — nothing to deploy. Skipping."
           fi
 
+      - name: Deploy Destructive Changes
+        run: |
+          if [ ! -f delta/destructiveChanges/destructiveChanges.xml ]; then
+            echo "ℹ️ No destructiveChanges.xml found. Skipping."
+            exit 0
+          fi
+
+          # Count <members> tags — real deletions to process
+          DELETION_COUNT=$(grep -c "<members>" delta/destructiveChanges/destructiveChanges.xml 2>/dev/null || echo "0")
+          echo "🗑️ Deletions found in destructiveChanges.xml: $DELETION_COUNT"
+
+          if [ "$DELETION_COUNT" -gt 0 ]; then
+            echo "🗑️ Deploying destructive changes..."
+            sf project deploy start \
+              --target-org orgfarm-348cfcfd79-dev-ed.develop.my.salesforce.com \
+              --manifest delta/destructiveChanges/destructiveChanges.xml \
+              --pre-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
+              --wait 30
+            echo "✅ Destructive changes deployed!"
+          else
+            echo "ℹ️ destructiveChanges.xml is empty — nothing to delete. Skipping."
+          fi
